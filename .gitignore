@@ -1,0 +1,9 @@
+data/
+# Binario compilado en la raiz (anclado con / para no excluir cmd/processor)
+/processor
+.venv/
+__pycache__/
+.DS_Store
+.env
+# Material del curso (instrucciones), no es parte del proyecto
+E-Go05_instrucciones.docx

@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: e-go05-postgres
+    environment:
+      POSTGRES_DB: go05
+      POSTGRES_USER: go05
+      POSTGRES_PASSWORD: go05
+    ports:
+      - "127.0.0.1:5436:5432"   # solo localhost: no expuesto a la red
+    volumes:
+      - pgdata_go05:/var/lib/postgresql/data
+
+volumes:
+  pgdata_go05:
