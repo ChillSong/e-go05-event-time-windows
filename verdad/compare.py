@@ -115,7 +115,9 @@ if rows:
     with open(OUT, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
-        w.writerows(rows)
+        # 6 decimales: el promedio en punto flotante de DuckDB puede variar en el
+        # ultimo digito segun el orden de suma; redondeado, el CSV es estable.
+        w.writerows({k: round(v, 6) if isinstance(v, float) else v for k, v in r.items()} for r in rows)
 
 
 def fmt_s(s):

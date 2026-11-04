@@ -13,6 +13,19 @@ eventos, comparada ventana por ventana contra una verdad batch independiente
 - El tiempo de procesamiento (`arrival_time`, inyectado como `Clock`) decide
   **cuando** el sistema cree que una ventana esta completa.
 
+## Resumen: las cinco preguntas
+
+| Pregunta (seccion 7 del enunciado) | Respuesta corta | Detalle |
+|---|---|---|
+| Como calculo el watermark y por que un reloj roto no lo adelanta | `W = max(min(maxEventAceptado, ahora), ahora − 1 min)`, monotono. Un reloj roto tiene que pasar dos guardas: la cuarentena **antes** del watermark y el tope `min(..., ahora)`. Sin ellas, un solo reloj roto hace descartar el **99.99%** del GMV. | §1 |
+| Tabla de las tres configuraciones | 10 s / 2 min / 30 min dejan fuera **3.00% / 1.84% / 0.29%** del GMV, con error por ventana de 2.99% / 1.84% / 0.29% y demora p50 de 10.2 s / 2.0 min / 30.0 min. El control de 4 h coincide **al centavo** en las 360 celdas. | §2 |
+| Que recomiendo y cuanto confiar antes del final | **30 min**: recupera USD 1.9 M frente a 2 min por 6 ventanas mas en memoria. El numero se ve desde el cierre (~4% por debajo), a los 2 min esta dentro del ~2%, y solo se corrige hacia arriba. | §3 |
+| Umbral de reloj roto, cuantos y por que cuarentena | `event_time > arrival_time + 1 min`: **1,821 eventos, USD 115,306.98** (0.094%). Cuarentena porque el pago es real: finanzas lo va a conciliar. | §4 |
+| Que cambiaria con 30% de cola larga | Ninguna lateness alcanza. Desviaria lo tardio a correcciones con reexpresion batch, separaria el tablero operativo de la cifra contable, estimaria con la curva de completitud y sacaria el estado de memoria. | §5 |
+
+Todo se reproduce desde cero con `scripts/run_all.sh` (~1 min), que ademas verifica
+idempotencia y una caida a mitad de corrida (anexos).
+
 ---
 
 ## 1. Como calculo el watermark y por que un reloj roto no lo puede adelantar
@@ -148,7 +161,7 @@ su cierre y se sigue corrigiendo en vivo (sube de revision). La lateness solo de
 | Primera version visible | al cierre | al cierre |
 | Numero congelado (final) | +2 min | +30 min |
 | GMV perdido para siempre | USD 2.26 M (1.84%) | **USD 0.36 M (0.29%)** |
-| Costo | 2 ventanas en memoria | 8 ventanas en memoria, ~49k escrituras en 6 h |
+| Costo | 2 ventanas en memoria, 19,570 versiones publicadas | 8 ventanas en memoria, 49,658 versiones publicadas |
 
 Pasar de 2 a 30 minutos recupera **USD 1.9 M** del Hot Sale a cambio de 6 ventanas
 mas en memoria, que es trivial. 10 segundos solo tendria sentido si alguien necesitara
@@ -172,8 +185,8 @@ cada celda ventana × pais ya habia llegado en cada momento.
 **Lo que le diria al equipo de operaciones:**
 1. **Al cierre de una ventana, el numero esta ~4% por debajo del real** (hasta ~5% en el
    peor pais). Siempre se corrige **hacia arriba**: los tardios solo suman.
-2. **A los 2 minutos ya esta dentro del ~2%.** Es un buen momento para decidir refuerzos
-   de logistica y soporte.
+2. **A los 2 minutos ya esta dentro del ~2%** (~2.7% en el peor pais). Es un buen
+   momento para decidir refuerzos de logistica y soporte.
 3. **No comparen paises cuya diferencia sea menor al ~5% al cierre**: esa diferencia
    puede ser solo que los pagos de un pais llegaron mas lento.
 4. El tablero muestra `revision` y `status` (`provisional` / `final`) por celda. Un
@@ -269,14 +282,47 @@ DESPUES: window_results 7fc62fe9411a3c4b426a4b26624f26c7 (1080 filas)  rejected_
 
 Mismas filas, mismos valores, mismas revisiones.
 
+**Caida a mitad de corrida** (`scripts/crash_test.sh`). Repetir una corrida completa
+no prueba que una corrida **a medias** se recupere, asi que lo probe aparte: el
+procesador se mata con `kill -9` al pasar la linea 1,000,000, se vuelve a correr sin
+borrar nada, y el resultado se compara contra la corrida limpia `lat-2m` (hash del
+contenido sin el `run_id`):
+
+```
+kill -9 en: 1000k lines  W=13:00:37  open windows=2
+tras la caida (parcial):  8f3537fb09fa65a30569278c143cf2da 175 / 1913992f8692f69008dad1f2701fafa8 15000   run_metrics=0
+tras volver a correr:     caf6eafdcbe5a3fdb582ebf9bea4f511 360 / 85d6b5d6a5904e9acaa7e0cd1311bfea 38816
+corrida limpia (lat-2m):  caf6eafdcbe5a3fdb582ebf9bea4f511 360 / 85d6b5d6a5904e9acaa7e0cd1311bfea 38816
+```
+
+La caida dejo 175 celdas a medio corregir, 15,000 rechazos y ninguna metrica. Al volver
+a correr, cada celda recibe de nuevo sus versiones desde la revision 1. El upsert solo
+aplica las de revision mayor o igual a la guardada, asi que lo que quedo a medias se
+sobrescribe y nunca al reves. El resultado es identico a una corrida limpia.
+
 ## Anexo: el reloj inyectable
 
 `internal/clock` define `Clock { Now() time.Time }` con dos implementaciones: `Real`
 (`time.Now`, para una entrada en vivo) y `Manual` (solo avanza cuando se le pide, y nunca
 hacia atras). El procesador nunca llama `time.Now()`. En la reproduccion del archivo,
 un `Manual` se mueve al `arrival_time` de cada linea; en `tests/`, cada test mueve el
-reloj a mano. Los 14 tests son deterministas: cubren bordes de ventana, emision,
-correccion dentro de la lateness, descarte fuera de ella (incluido el borde exacto
-`W == fin + lateness`), reloj roto en cuarentena sin efecto sobre W, el tope del reloj,
-liberacion de estado, secuencia de revisiones, regla de inactividad, fin de entrada y el
-fallo del watermark ingenuo.
+reloj a mano. Ningun test llama `time.Now()`, y todos pasan con `go test -race ./...`.
+
+## Anexo: casos de la rubrica y el test que cubre cada uno
+
+| Caso que pide la rubrica | Test (`tests/window_test.go`) |
+|---|---|
+| Borde de ventana `[inicio, fin)` | `TestWindowBoundaryIsHalfOpen` |
+| Correccion dentro de la lateness | `TestLateEventWithinLatenessCorrectsWindow` |
+| Descarte fuera de la lateness (contado, con motivo) | `TestEventBeyondLatenessIsDroppedAndCounted` |
+| Borde exacto `W == fin + lateness` | `TestLatenessBoundaryIsExact` |
+| Reloj roto en cuarentena, sin efecto sobre el watermark | `TestBrokenClockQuarantinedAndWatermarkUntouched` |
+| Evento adelantado dentro de la tolerancia no lleva W mas alla del reloj | `TestEventWithinToleranceCannotPushWatermarkAheadOfClock` |
+| Estado liberado al finalizar | `TestFinalizedWindowsReleaseState` |
+| Emision al pasar el fin | `TestWindowEmittedWhenWatermarkPassesEnd` |
+| Secuencia provisional → correcciones → final | `TestRevisionSequenceProvisionalCorrectionFinal` |
+| Regla de inactividad | `TestIdleRuleClosesWindowsWhenEventTimeStalls` |
+| Fin de entrada finaliza todo | `TestCloseFinalizesEverything` |
+| Reloj inyectable: `Manual` nunca retrocede, `Real` cumple la interfaz | `TestManualClockNeverRunsBackwards`, `TestRealClockImplementsInterface` |
+| El watermark ingenuo se rompe con un reloj roto | `TestNaiveWatermarkIsBrokenByOneBadClock` |
+| Montos exactos a centavos (`cmd/processor`) | `TestParseCentsExact` |

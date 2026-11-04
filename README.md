@@ -58,7 +58,27 @@ data/eventos_tardios.jsonl  (orden de llegada, 2M lineas)
 - [uv](https://docs.astral.sh/uv/) (crea un entorno Python 3.13 con `numpy==2.4.4` para
   el generador y `duckdb` para la verdad y la comparacion)
 
-## Comandos (verificados desde cero)
+## Un comando: todo desde cero
+
+```bash
+scripts/run_all.sh
+```
+
+En ~1 minuto, desde una carpeta recien clonada:
+1. Crea el entorno Python.
+2. Genera el dataset.
+3. Calcula la verdad.
+4. Levanta Postgres.
+5. Compila.
+6. Corre las tres configuraciones, el control de 4 h y el experimento ingenuo.
+7. Compara contra la verdad (la tabla de la seccion 6).
+8. Verifica la idempotencia: repetir una corrida deja el mismo hash.
+9. Verifica la caida a mitad de corrida: `kill -9` y volver a correr da lo mismo que
+   una corrida limpia.
+
+Termina con `TODO OK` o con un codigo distinto de 0 si algo no cuadra.
+
+## Comandos paso a paso (lo mismo que hace el script)
 
 ### 1. Entorno Python y dataset
 
@@ -67,7 +87,7 @@ que el entorno se crea con `uv`:
 
 ```bash
 uv venv .venv --python 3.13
-uv pip install --python .venv/bin/python numpy==2.4.4 duckdb
+uv pip install --python .venv/bin/python numpy==2.4.4 duckdb==2.0.0
 mkdir -p data && cd data && ../.venv/bin/python ../generate_events_go05.py && cd ..
 # ~3 s -> data/eventos_tardios.jsonl (351 MB). Imprime los totales por tramo y por pais.
 ```
@@ -95,7 +115,7 @@ go build -o processor ./cmd/processor
 ./processor --lateness 4h --run-id control-4h   # control: lateness > atraso maximo
 ```
 
-Cada corrida tarda ~3 s.
+Cada configuracion tarda ~3 s; el control de 4 h, ~5 s.
 
 ### 5. Comparar contra la verdad
 
@@ -116,7 +136,15 @@ hash; ./processor --lateness 2m >/dev/null 2>&1; hash    # mismo hash, mismas fi
 
 ```bash
 ./processor --lateness 2m --naive-watermark --run-id naive-2m
-# W = max(event_time) sin guardas: descarta 99.99% del GMV como "tardio"
+# W = max(event_time) sin guardas: descarta 99.99% del GMV como "tardio" (~30 s)
+```
+
+### 7. Caida a mitad de corrida
+
+```bash
+scripts/crash_test.sh
+# kill -9 en la linea 1,000,000, se vuelve a correr sin borrar nada:
+# el hash del contenido es identico al de lat-2m
 ```
 
 ## Flags del procesador
@@ -157,6 +185,8 @@ internal/store/       Sink Postgres: upsert por revision, rechazados, metricas
 tests/                Tests con reloj inyectable
 verdad/truth.py       Verdad batch en DuckDB + curva de completitud
 verdad/compare.py     Comparacion ventana por ventana contra cada configuracion
+scripts/run_all.sh    Todo desde cero en un comando, con verificaciones
+scripts/crash_test.sh kill -9 a mitad de corrida y recuperacion
 docker-compose.yml    Postgres 16 (127.0.0.1:5436)
 generate_events_go05.py  Generador del dataset (material del curso)
 decisions.md          Watermark, tabla de configuraciones, recomendacion, relojes rotos, cola larga
